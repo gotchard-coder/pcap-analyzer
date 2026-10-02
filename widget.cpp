@@ -1,0 +1,103 @@
+#include "widget.h"
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QFile>
+
+static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
+    if(offset+1>=d.size())
+        return 0;
+
+    const quint8 b0=static_cast<unsigned char>(d.at(offset));
+    const quint8 b1=static_cast<unsigned char>(d.at(offset+1));
+
+    // 根据大小端判断两个字节谁是高位谁是低位
+    // | 是按位或：把四段拼起来
+    if(littleEndian)
+        return static_cast<quint16>(b0|(b1<<8)); // 小端：低位字节在前
+    return static_cast<quint16>(b0<<8|b1); // 大端：高位字节在前
+}
+
+static quint32 readU32(const QByteArray &d,int offset,bool littleEndian){
+    if(offset+3>=d.size())
+        return 0;
+
+    const quint8 b0=static_cast<unsigned char>(d.at(offset));
+    const quint8 b1=static_cast<unsigned char>(d.at(offset+1));
+    const quint8 b2=static_cast<unsigned char>(d.at(offset+2));
+    const quint8 b3=static_cast<unsigned char>(d.at(offset+3));
+
+    if(littleEndian)
+        return static_cast<quint32>(b0|(b1<<8)|(b2<<16)|(b3<<24));
+    return static_cast<quint32>((b0<<24)|(b1<<16)|(b2<<8)|b3);
+}
+
+Widget::Widget(QWidget *parent)
+    : QWidget(parent)
+{    
+    resize(600,120);
+    setWindowTitle(QStringLiteral("MyPktView"));
+
+    m_label =new QLabel(this);
+    m_label->setText(QStringLiteral("我要开始学抓包解析了"));
+
+    // 布局：不放进布局的控件会贴在左上角、还可能被别的控件盖住
+    QVBoxLayout *layout=new QVBoxLayout(this);
+    layout->addWidget(m_label);
+
+    QFile file(QStringLiteral("E:/dsh_Cwork/PktView/samples/sample.pcap"));
+
+    // QIODevice::ReadOnly = 只读模式
+    if(!file.open(QIODevice::ReadOnly)){
+        m_label->setText(QStringLiteral("打不开文件"));
+        return ;
+    }
+
+    // readAll()：把整个文件读进内存，返回一串字节（QByteArray）
+    // const：这个变量后面不再修改（好习惯，防止手误改坏）
+    const QByteArray data=file.readAll();
+
+    // 判断字节序 + 读版本号
+    const unsigned char m0=static_cast<unsigned char>(data.at(0));
+    const unsigned char m1=static_cast<unsigned char>(data.at(1));
+
+    // 默认先假设文件是小端存储(目前只用前两个字节来判断)
+    bool littleEndian=true;
+    if(m0==0xd4&&m1==0xc3)
+        littleEndian=true; // 魔数0xD4C3 → 文件为小端字节序
+    else if(m0==0xal&&m1==0xb2)
+        littleEndian=false; // 魔数0xA1B2 → 文件为大端字节序
+    else{
+        m_label->setText(QStringLiteral("这不是pcap文件"));
+        return ;
+    }
+
+    // pcap文件头：偏移4字节为主版本号、偏移6字节为次版本号，每个版本号占2字节
+    const quint16 major=readU16(data,4,littleEndian);
+    const quint16 minor=readU16(data,6,littleEndian);
+
+    // 一个一个数包有多少个
+    int count=0; // 数到了几个包
+    int offset=24; // 24  = 跳过文件头
+    while(offset+16<=data.size()){
+        const quint32 len=readU32(data,offset+8,littleEndian);
+
+        offset+=16; // 跳过包头
+
+        if(len==0||offset+static_cast<int>(len)>data.size())
+            break;
+
+        offset+=static_cast<int>(len); //跳过这个包的数据，来到下一个包的开头
+        ++count;
+
+    }
+
+    // %3 会被最后一个.arg填上
+    m_label->setText(QStringLiteral("pcap版本%1.%2，文件里共有%3个包")
+            .arg(major).arg(minor).arg(count));
+
+}
+
+Widget::~Widget()
+{
+
+}
