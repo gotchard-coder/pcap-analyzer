@@ -2,6 +2,10 @@
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QFile>
+#include <QTableWidget> //表格类
+#include <QTableWidgetItem> //表格里的一格
+#include <QHeaderView> //表头相关
+#include <QAbstractItemView> //下面要用它的常量（禁止编辑、整行选中）
 
 static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
     if(offset+1>=d.size())
@@ -34,15 +38,36 @@ static quint32 readU32(const QByteArray &d,int offset,bool littleEndian){
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
 {    
-    resize(600,120);
+    resize(700,420);
     setWindowTitle(QStringLiteral("MyPktView"));
 
     m_label =new QLabel(this);
-    m_label->setText(QStringLiteral("我要开始学抓包解析了"));
+    m_label->setText(QStringLiteral("正在读取...."));
+
+    m_table=new QTableWidget(this);
+
+    m_table->setColumnCount(3); //要3列
+    m_table->setHorizontalHeaderLabels(QStringList()
+                                       <<QStringLiteral("序号")
+                                       <<QStringLiteral("时间(秒)")
+                                       <<QStringLiteral("长度(字节)"));
+
+    // 隐藏最左边那列行号（1,2,3… 是自动的，不好看） vertical：垂直的
+    m_table->verticalHeader()->setVisible(false);
+
+    // 最后一列自动撑满  horizontal：水平的
+    m_table->horizontalHeader()->setStretchLastSection(true);
+
+    // 禁止用户双击改内容
+    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    // 点一下选中整行
+    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
 
     // 布局：不放进布局的控件会贴在左上角、还可能被别的控件盖住
     QVBoxLayout *layout=new QVBoxLayout(this);
     layout->addWidget(m_label);
+    layout->addWidget(m_table);
 
     QFile file(QStringLiteral("E:/dsh_Cwork/PktView/samples/sample.pcap"));
 
@@ -64,7 +89,7 @@ Widget::Widget(QWidget *parent)
     bool littleEndian=true;
     if(m0==0xd4&&m1==0xc3)
         littleEndian=true; // 魔数0xD4C3 → 文件为小端字节序
-    else if(m0==0xal&&m1==0xb2)
+    else if(m0==0xa1&&m1==0xb2)
         littleEndian=false; // 魔数0xA1B2 → 文件为大端字节序
     else{
         m_label->setText(QStringLiteral("这不是pcap文件"));

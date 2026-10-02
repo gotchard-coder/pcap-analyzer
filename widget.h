@@ -5,6 +5,7 @@
 
 QT_BEGIN_NAMESPACE
 class QLabel;
+class QTableWidget;
 QT_END_NAMESPACE
 
 class Widget : public QWidget
@@ -17,6 +18,7 @@ public:
 
 private:
     QLabel *m_label=nullptr;
+    QTableWidget *m_table=nullptr; // 表格控件
 
 };
 
