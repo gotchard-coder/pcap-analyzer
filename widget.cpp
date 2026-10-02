@@ -15,7 +15,7 @@ static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
     const quint8 b1=static_cast<unsigned char>(d.at(offset+1));
 
     // 根据大小端判断两个字节谁是高位谁是低位
-    // | 是按位或：把四段拼起来
+    // | 是按位或：把2个字节拼起来
     if(littleEndian)
         return static_cast<quint16>(b0|(b1<<8)); // 小端：低位字节在前
     return static_cast<quint16>(b0<<8|b1); // 大端：高位字节在前
@@ -100,10 +100,14 @@ Widget::Widget(QWidget *parent)
     const quint16 major=readU16(data,4,littleEndian);
     const quint16 minor=readU16(data,6,littleEndian);
 
-    // 一个一个数包有多少个
-    int count=0; // 数到了几个包
+
+    // 读一个包->填一行表格
+    int row=0; // 已经填到第几行
     int offset=24; // 24  = 跳过文件头
     while(offset+16<=data.size()){
+        // 记录头 16 字节：秒(4) 微秒(4) 长度(4) 原始长度(4)
+        const quint32 sec=readU32(data,offset,littleEndian);
+        const quint32 usec=readU32(data,offset+4,littleEndian);
         const quint32 len=readU32(data,offset+8,littleEndian);
 
         offset+=16; // 跳过包头
@@ -111,14 +115,21 @@ Widget::Widget(QWidget *parent)
         if(len==0||offset+static_cast<int>(len)>data.size())
             break;
 
+        m_table->insertRow(row);
+        // m_table->setItem(行号, 列号, QTableWidgetItem对象)
+        m_table->setItem(row,0,new QTableWidgetItem(QString::number(row+1))); // 序号
+        m_table->setItem(row,1,new QTableWidgetItem(
+                             QString::number(sec+usec/1000000.0,'f',6))); // 时间(秒)
+        m_table->setItem(row,2,new QTableWidgetItem(QString::number(len))); // 长度
+
         offset+=static_cast<int>(len); //跳过这个包的数据，来到下一个包的开头
-        ++count;
+        ++row;
 
     }
 
-    // %3 会被最后一个.arg填上
+    // 将版本号拼接成字符串展示到label上，%1、%2、%3会被arg依次替换
     m_label->setText(QStringLiteral("pcap版本%1.%2，文件里共有%3个包")
-            .arg(major).arg(minor).arg(count));
+            .arg(major).arg(minor).arg(row));
 
 }
 
