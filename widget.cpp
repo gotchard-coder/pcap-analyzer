@@ -110,17 +110,25 @@ Widget::Widget(QWidget *parent)
                             <<QStringLiteral("字段")<<QStringLiteral("值"));
     m_tree->header()->setStretchLastSection(true); // 表头最后一列自动拉伸，填满剩余空间
 
-    // 左右分栏（中间的竖线可以拖动）
+    // 左右分栏-水平模式（中间的竖线可以拖动）
     QSplitter *splitter=new QSplitter(Qt::Horizontal,this);
     splitter->addWidget(m_table);
     splitter->addWidget(m_tree);
-    splitter->setStretchFactor(0,3); // 左边占 3 份宽
-    splitter->setStretchFactor(1,2); // 右边占 2 份宽
+    splitter->setStretchFactor(0,3); // 左边占 3 份宽,0代表左
+    splitter->setStretchFactor(1,2); // 右边占 2 份宽,1代表右
 
     // 布局：不放进布局的控件会贴在左上角、还可能被别的控件盖住
     QVBoxLayout *layout=new QVBoxLayout(this);
     layout->addWidget(m_label);
     layout->addWidget(splitter);
+
+    // ============ 信号槽：把"点表格"接到"onTableClicked" ============
+    // connect(谁发信号, 发什么信号, 谁来处理, 处理函数)
+    //   m_table                  —— 发信号的控件（表格）
+    //   &QTableWidget::cellClicked —— 发什么信号（某个单元格被点击）
+    //   this                     —— 谁来处理（当前窗口）
+    //   &Widget::onTableClicked  —— 用哪个函数处理
+    connect(m_table,&QTableWidget::cellClicked,this,&Widget::onTableClicked);
 
     QFile file(QStringLiteral("E:/dsh_Cwork/PktView/samples/sample.pcap"));
 
@@ -260,6 +268,18 @@ Widget::Widget(QWidget *parent)
     m_label->setText(QStringLiteral("pcap版本%1.%2，文件里共有%3个包")
             .arg(major).arg(minor).arg(row));
 
+}
+
+void Widget::onTableClicked(int row)
+{
+    // 先清空树（每次点击都重新填）
+    m_tree->clear();
+
+    // 加一个顶层节点：两列分别是"字段"和"值"
+    // QTreeWidgetItem(父节点, 每一列的文字)
+    new QTreeWidgetItem(m_tree,QStringList()
+                        <<QStringLiteral("你点了第%1行").arg(row+1)
+                        <<QStringLiteral("（下一小步这里会变成协议分层）"));
 }
 
 Widget::~Widget()

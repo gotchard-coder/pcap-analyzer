@@ -19,6 +19,9 @@ public:
     Widget(QWidget *parent = 0);
     ~Widget();
 
+private slots: // 槽函数写在这里
+    void onTableClicked(int row); // 表格被点击时自动调用
+
 private:
     QLabel *m_label=nullptr;
     QTableWidget *m_table=nullptr; // 表格控件
