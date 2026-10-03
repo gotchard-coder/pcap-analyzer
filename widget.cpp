@@ -53,6 +53,15 @@ static QString macToString(const QByteArray &d,int offset){
     return parts.join(QLatin1Char(':'));
 }
 
+// 把 4 个字节变成 "192.168.1.5" 这样的 IPv4 地址文字
+static QString ipv4ToString(const QByteArray &d,int offset){
+    return QString("%1.%2.%3.%4")
+            .arg(static_cast<unsigned char>(d.at(offset)))
+            .arg(static_cast<unsigned char>(d.at(offset+1)))
+            .arg(static_cast<unsigned char>(d.at(offset+2)))
+            .arg(static_cast<unsigned char>(d.at(offset+3)));
+}
+
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
 {    
@@ -143,13 +152,29 @@ Widget::Widget(QWidget *parent)
                              QString::number(sec+usec/1000000.0,'f',6))); // 时间(秒)
         m_table->setItem(row,2,new QTableWidgetItem(QString::number(len))); // 长度
 
-        // 解析以太网头（14字节)
+        // 解析以太网头（14字节)+IPv4头，填地址
         if(len>=14){
             const int ethStart=offset;
             const QString dstMac=macToString(data,ethStart); // 偏移 0：目的 MAC
             const QString srcMac=macToString(data,ethStart+6); // 偏移 6：源 MAC
-            m_table->setItem(row,3,new QTableWidgetItem(srcMac)); // 第 3 列：源地址
-            m_table->setItem(row,4,new QTableWidgetItem(dstMac)); // 第 4 列：目的地址
+
+            // 以太网"类型"字段（偏移 12，占 2 字节）
+            //    ⚠️ 传 false：包里面的字段是大端（网络字节序）
+            const quint16 ethType=readU16(data,ethStart+12,false);
+
+            // 先默认显示mac
+            QString srcText=srcMac;
+            QString dstText=dstMac;
+
+            // 如果是IPv4（类型=0x0800),再往下挖一层，改成显示IP
+            if(ethType==0x0800&&len>=34){ // 14(以太网头) + 20(IP头) = 34
+                const int ipStart=ethStart+14;
+                srcText=ipv4ToString(data,ipStart+12);
+                dstText=ipv4ToString(data,ipStart+16);
+            }
+
+            m_table->setItem(row,3,new QTableWidgetItem(srcText)); // 第 3 列：源地址
+            m_table->setItem(row,4,new QTableWidgetItem(dstText)); // 第 4 列：目的地址
         }
 
         offset+=static_cast<int>(len); //跳过这个包的数据，来到下一个包的开头
