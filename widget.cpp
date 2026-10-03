@@ -8,7 +8,7 @@
 #include <QAbstractItemView> //下面要用它的常量（禁止编辑、整行选中）
 
 static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
-    if(offset+1>=d.size())
+    if(offset+2>d.size())
         return 0;
 
     const quint8 b0=static_cast<unsigned char>(d.at(offset));
@@ -22,7 +22,7 @@ static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
 }
 
 static quint32 readU32(const QByteArray &d,int offset,bool littleEndian){
-    if(offset+3>=d.size())
+    if(offset+4>d.size())
         return 0;
 
     const quint8 b0=static_cast<unsigned char>(d.at(offset));
@@ -37,6 +37,9 @@ static quint32 readU32(const QByteArray &d,int offset,bool littleEndian){
 
 // 把 6 个字节变成 "11:22:33:44:55:66" 这样的 MAC 地址文字
 static QString macToString(const QByteArray &d,int offset){
+    if(offset+6>d.size())
+        return "";
+
     QStringList parts; // 用来存放6个分段，比如["11","22","33","44","55","66"]
 
     // MAC固定6字节，循环读6次
@@ -55,6 +58,8 @@ static QString macToString(const QByteArray &d,int offset){
 
 // 把 4 个字节变成 "192.168.1.5" 这样的 IPv4 地址文字
 static QString ipv4ToString(const QByteArray &d,int offset){
+    if(offset+4>d.size()) return "";
+
     return QString("%1.%2.%3.%4")
             .arg(static_cast<unsigned char>(d.at(offset)))
             .arg(static_cast<unsigned char>(d.at(offset+1)))
@@ -187,7 +192,30 @@ Widget::Widget(QWidget *parent)
                     protoText=QStringLiteral("ICMP");
                 else
                     protoText=QStringLiteral("IP %1").arg(ipProto);
-            }else{
+
+                // TCP / UDP 有端口，读出来接到地址后面
+                if(ipProto==6||ipProto==17){
+                    // IP 首部长度不是固定的 20 字节！
+                    // 它写在 IP 头的第 1 个字节的"低 4 位"里，单位是 4 字节：
+                    //   & 0x0F  = 取低 4 位（按位与）
+                    //   再 × 4  = 换算成字节数（通常是 20）(4 字节为单位)
+                    const int ipHeaderLen=
+                            (static_cast<unsigned char>(data.at(ipStart))&0x0F)*4;
+
+                    const int transStart=ipStart+ipHeaderLen; // TCP/UDP 头紧跟在 IP 头后面
+
+                    if(transStart+4<=data.size()){
+                        // 端口各占2字节
+                        const quint16 srcPort=readU16(data,transStart,false); // 偏移 0：源端口
+                        const quint16 dstPort=readU16(data,transStart+2,false); // 偏移2：目的端口
+
+                        // += 是"接到字符串后面"：把 IP 变成 "IP:端口"
+                        srcText+=QStringLiteral(":%1").arg(srcPort);
+                        dstText+=QStringLiteral(":%1").arg(dstPort);
+                    }
+                }
+
+            }else if(ethType==0x0806){
                 protoText=QStringLiteral("ARP"); // 非 IPv4（样例里是 ARP）
             }
 
@@ -196,10 +224,16 @@ Widget::Widget(QWidget *parent)
             m_table->setItem(row,5,new QTableWidgetItem(protoText)); // 第5列：协议
         }
 
+
+
+
         offset+=static_cast<int>(len); //跳过这个包的数据，来到下一个包的开头
         ++row;
 
     }
+
+    // 自动调整所有列的宽度，根据这一列里面内容的长短自适应
+    m_table->resizeColumnsToContents();
 
     // 将版本号拼接成字符串展示到label上，%1、%2、%3会被arg依次替换
     m_label->setText(QStringLiteral("pcap版本%1.%2，文件里共有%3个包")
