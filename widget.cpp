@@ -65,7 +65,7 @@ static QString ipv4ToString(const QByteArray &d,int offset){
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
 {    
-    resize(900,420);
+    resize(1000,420);
     setWindowTitle(QStringLiteral("MyPktView"));
 
     m_label =new QLabel(this);
@@ -73,13 +73,14 @@ Widget::Widget(QWidget *parent)
 
     m_table=new QTableWidget(this);
 
-    m_table->setColumnCount(5); //要5列
+    m_table->setColumnCount(6); //要6列
     m_table->setHorizontalHeaderLabels(QStringList()
                                        <<QStringLiteral("序号")
                                        <<QStringLiteral("时间(秒)")
                                        <<QStringLiteral("长度(字节)")
                                        <<QStringLiteral("源地址")
                                        <<QStringLiteral("目的地址")
+                                       <<QStringLiteral("协议")
                                        );
 
     // 隐藏最左边那列行号（1,2,3… 是自动的，不好看） vertical：垂直的
@@ -158,7 +159,7 @@ Widget::Widget(QWidget *parent)
             const QString dstMac=macToString(data,ethStart); // 偏移 0：目的 MAC
             const QString srcMac=macToString(data,ethStart+6); // 偏移 6：源 MAC
 
-            // 以太网"类型"字段（偏移 12，占 2 字节）
+            // 以太网"类型"字段（偏移 12，占 2 字节） Ethernet 以太网
             //    ⚠️ 传 false：包里面的字段是大端（网络字节序）
             const quint16 ethType=readU16(data,ethStart+12,false);
 
@@ -166,15 +167,33 @@ Widget::Widget(QWidget *parent)
             QString srcText=srcMac;
             QString dstText=dstMac;
 
+            // 先默认协议未知 protocol（协议）
+            QString protoText=QStringLiteral("其他");
+
             // 如果是IPv4（类型=0x0800),再往下挖一层，改成显示IP
             if(ethType==0x0800&&len>=34){ // 14(以太网头) + 20(IP头) = 34
                 const int ipStart=ethStart+14;
                 srcText=ipv4ToString(data,ipStart+12);
                 dstText=ipv4ToString(data,ipStart+16);
+
+                //看 IP 头的"协议号"（偏移 9，1 字节）
+                // 6=TCP、17=UDP、1=ICMP
+                const int ipProto=static_cast<unsigned char>(data.at(ipStart+9));
+                if(ipProto==6)
+                    protoText=QStringLiteral("TCP");
+                else if(ipProto==17)
+                    protoText=QStringLiteral("UDP");
+                else if(ipProto==1)
+                    protoText=QStringLiteral("ICMP");
+                else
+                    protoText=QStringLiteral("IP %1").arg(ipProto);
+            }else{
+                protoText=QStringLiteral("ARP"); // 非 IPv4（样例里是 ARP）
             }
 
             m_table->setItem(row,3,new QTableWidgetItem(srcText)); // 第 3 列：源地址
             m_table->setItem(row,4,new QTableWidgetItem(dstText)); // 第 4 列：目的地址
+            m_table->setItem(row,5,new QTableWidgetItem(protoText)); // 第5列：协议
         }
 
         offset+=static_cast<int>(len); //跳过这个包的数据，来到下一个包的开头
