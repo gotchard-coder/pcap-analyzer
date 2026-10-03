@@ -275,11 +275,39 @@ void Widget::onTableClicked(int row)
     // 先清空树（每次点击都重新填）
     m_tree->clear();
 
-    // 加一个顶层节点：两列分别是"字段"和"值"
+    // 越界保护（万一row不对）
+    if(row<0||row>=m_packetStarts.size()){
+        return ;
+    }
+
+    // ★ 关键：第 row 个包的"包数据"从文件的第几字节开始
+    //   这就是 5.1 里那句 m_packetStarts << offset; 存下来的东西
+    const int pktStart=m_packetStarts.at(row);
+
+    // ================= 第 1 层：以太网 II =================
+    // 顶层节点（挂在树上）
     // QTreeWidgetItem(父节点, 每一列的文字)
-    new QTreeWidgetItem(m_tree,QStringList()
-                        <<QStringLiteral("你点了第%1行").arg(row+1)
-                        <<QStringLiteral("（下一小步这里会变成协议分层）"));
+    QTreeWidgetItem *ethItem=new QTreeWidgetItem(m_tree,QStringList()<<QStringLiteral("以太网II"));
+    ethItem->setExpanded(true); // 默认展开
+
+    // 子节点（挂在 ethItem 下面），两列：字段名 / 值
+    new QTreeWidgetItem(ethItem, QStringList()
+                        << QStringLiteral("目的 MAC") << macToString(m_data, pktStart));
+    new QTreeWidgetItem(ethItem, QStringList()
+                        << QStringLiteral("源 MAC") << macToString(m_data, pktStart + 6));
+
+    // 类型字段（偏移 12，2 字节，大端）
+    const quint16 ethType=readU16(m_data,pktStart+12,false);
+    QString typeText;
+    if(ethType==0x0800)
+        typeText=QStringLiteral("0x0800(IPv4)");
+    else if(ethType==0x0806)
+        typeText=QStringLiteral("0x0806(ARP)");
+    else
+        typeText=QString("0x%1").arg(ethType,4,16,QLatin1Char('0'));
+
+    new QTreeWidgetItem(ethItem,QStringList()
+                        <<QStringLiteral("类型")<<typeText);
 }
 
 Widget::~Widget()
