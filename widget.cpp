@@ -35,10 +35,28 @@ static quint32 readU32(const QByteArray &d,int offset,bool littleEndian){
     return static_cast<quint32>((b0<<24)|(b1<<16)|(b2<<8)|b3);
 }
 
+// 把 6 个字节变成 "11:22:33:44:55:66" 这样的 MAC 地址文字
+static QString macToString(const QByteArray &d,int offset){
+    QStringList parts; // 用来存放6个分段，比如["11","22","33","44","55","66"]
+
+    // MAC固定6字节，循环读6次
+    for(int i=0;i<6;++i){
+        // .arg( 要转的数字, 最小宽度, 进制, 填充字符 )
+        parts<<QString("%1").arg(
+                   static_cast<unsigned char>(d.at(offset+i)),
+                   2, // 最少输出2个字符
+                   16, // 进制：16进制
+                   QLatin1Char('0') //不够两位前面补0，0x5 → "05"而不是"5"
+                   );
+    }
+    // 把列表里6个字符串用 : 拼接在一起
+    return parts.join(QLatin1Char(':'));
+}
+
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
 {    
-    resize(700,420);
+    resize(900,420);
     setWindowTitle(QStringLiteral("MyPktView"));
 
     m_label =new QLabel(this);
@@ -46,11 +64,14 @@ Widget::Widget(QWidget *parent)
 
     m_table=new QTableWidget(this);
 
-    m_table->setColumnCount(3); //要3列
+    m_table->setColumnCount(5); //要5列
     m_table->setHorizontalHeaderLabels(QStringList()
                                        <<QStringLiteral("序号")
                                        <<QStringLiteral("时间(秒)")
-                                       <<QStringLiteral("长度(字节)"));
+                                       <<QStringLiteral("长度(字节)")
+                                       <<QStringLiteral("源地址")
+                                       <<QStringLiteral("目的地址")
+                                       );
 
     // 隐藏最左边那列行号（1,2,3… 是自动的，不好看） vertical：垂直的
     m_table->verticalHeader()->setVisible(false);
@@ -121,6 +142,15 @@ Widget::Widget(QWidget *parent)
         m_table->setItem(row,1,new QTableWidgetItem(
                              QString::number(sec+usec/1000000.0,'f',6))); // 时间(秒)
         m_table->setItem(row,2,new QTableWidgetItem(QString::number(len))); // 长度
+
+        // 解析以太网头（14字节)
+        if(len>=14){
+            const int ethStart=offset;
+            const QString dstMac=macToString(data,ethStart); // 偏移 0：目的 MAC
+            const QString srcMac=macToString(data,ethStart+6); // 偏移 6：源 MAC
+            m_table->setItem(row,3,new QTableWidgetItem(srcMac)); // 第 3 列：源地址
+            m_table->setItem(row,4,new QTableWidgetItem(dstMac)); // 第 4 列：目的地址
+        }
 
         offset+=static_cast<int>(len); //跳过这个包的数据，来到下一个包的开头
         ++row;
