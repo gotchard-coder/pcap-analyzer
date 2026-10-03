@@ -110,12 +110,12 @@ Widget::Widget(QWidget *parent)
                             <<QStringLiteral("字段")<<QStringLiteral("值"));
     m_tree->header()->setStretchLastSection(true); // 表头最后一列自动拉伸，填满剩余空间
 
-    // 左右分栏（中间的竖线可以拖动）
+    // 左右分栏-水平模式（中间的竖线可以拖动）
     QSplitter *splitter=new QSplitter(Qt::Horizontal,this);
     splitter->addWidget(m_table);
     splitter->addWidget(m_tree);
-    splitter->setStretchFactor(0,3); // 左边占 3 份宽
-    splitter->setStretchFactor(1,2); // 右边占 2 份宽
+    splitter->setStretchFactor(0,3); // 左边占 3 份宽,0代表左
+    splitter->setStretchFactor(1,2); // 右边占 2 份宽,1代表右
 
     // 布局：不放进布局的控件会贴在左上角、还可能被别的控件盖住
     QVBoxLayout *layout=new QVBoxLayout(this);
