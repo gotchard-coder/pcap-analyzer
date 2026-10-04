@@ -544,25 +544,79 @@ void Widget::onTableClicked(int row)
                                         << QStringLiteral("回答数") << QString::number(anCount));
 
                     // DNS问题段，紧跟DNS头部之后，偏移12
-                    int qnameStart = dnsStart + 12;
-                    int qnameEnd;
-                    // 调用域名解析函数，得到域名，qnameEnd返回域名读完的位置
-                    QString domain=dnsName(m_data,qnameStart,dnsStart,qnameEnd);
+                    //pos 用来接住"查询名结束后的位置"，下一步解析回答记录要用
+                    int pos=0;
+                    // 调用域名解析函数，得到域名，pos返回域名读完的位置
+                    QString qname=dnsName(m_data,dnsStart+12,dnsStart,pos);
 
                     new QTreeWidgetItem(dnsItem,QStringList()
-                                        <<QStringLiteral("查询域名")<<domain);
+                                        <<QStringLiteral("查询域名")<<qname);
 
-                    // qnameEnd 是域名结束位置，后面2字节：查询类型，2字节：查询类
-                    if(qnameEnd +4 <= m_data.size())
+                    // pos 是域名结束位置，查询名后面还跟着 2 个字段，各占 2 字节，先跳过：
+                    //   查询类型 QTYPE ：1 = A（要 IPv4 地址）
+                    //   查询类   QCLASS：1 = IN（互联网
+                    pos+=4;
+
+                    // ================= 回答区 =================
+                    // anCount：DNS头部读出的回答记录数量，可能有多条
+                    for(int i=0;i<anCount;i++)
                     {
-                        quint16 qtype = readU16(m_data, qnameEnd, false);
-                        quint16 qclass= readU16(m_data, qnameEnd+2, false);
-                        new QTreeWidgetItem(dnsItem, QStringList()
-                                            << QStringLiteral("查询类型")
-                                            << QString::number(qtype));
-                        new QTreeWidgetItem(dnsItem, QStringList()
-                                            << QStringLiteral("查询类别")
-                                            << QString::number(qclass));
+                        // 越界防御：一条回答记录最少也要 10 字节
+                        // （名字 2(不一定)+ 类型 2 + 类 2 + TTL 4 + 数据长度 2，数据可能为 0）
+                        if(pos+10>m_data.size())
+                            // 这里能用 break，因为我们正在 for 循环里面（break 只能跳循环或 switch）
+                            break;
+
+                        int nameEnd=0; // 接住"这个名字结束后的位置"，后面找字段全靠它
+                        // 回答记录开头是域名，大概率是压缩指针指向查询域名
+                        const QString anName=dnsName(m_data,pos,dnsStart,nameEnd);
+
+                        // 名字后面是固定的 10 个字节，挨个读出来：
+                        //    类型(2) 类(2) TTL(4) 数据长度(2)
+                        const quint16 anType  = readU16(m_data, nameEnd,     false); // 1 = A 记录
+                        const quint16 anClass = readU16(m_data, nameEnd + 2, false); // 1 = IN
+                        const quint32 anTtl   = readU32(m_data, nameEnd + 4, false); // 能缓存多少秒
+                        const quint16 rdLen   = readU16(m_data, nameEnd + 8, false); // 数据长度：A = 4
+
+                        // 真正的数据（A 记录里就是 IP）紧跟在固定 10 字节之后
+                        const int rdStart=nameEnd+10;
+
+                        // 建一个"回答 N"节点挂在 DNS 下面
+                        QTreeWidgetItem *ansItem=new QTreeWidgetItem(dnsItem);
+                        ansItem->setText(0,QStringLiteral("回答 %1").arg(i+1));
+                        ansItem->setExpanded(true);
+
+                        new QTreeWidgetItem(ansItem,QStringList()
+                                            <<QStringLiteral("名字")<<anName);
+
+                        // 类型/类：认识的那几个显示成文字，不认识的直接显示数字
+                        // 三目运算符： 条件 ? 条件真时的值 : 条件假时的值
+                        new QTreeWidgetItem(ansItem, QStringList()
+                                            << QStringLiteral("类型")
+                                            << (anType == 1 ? QStringLiteral("A (1)")
+                                                            : QString::number(anType)));
+                        new QTreeWidgetItem(ansItem, QStringList()
+                                            << QStringLiteral("类")
+                                            << (anClass == 1 ? QStringLiteral("IN (1)")
+                                                             : QString::number(anClass)));
+                        new QTreeWidgetItem(ansItem, QStringList()
+                                            << QStringLiteral("TTL")
+                                            << QString("%1 秒").arg(anTtl));
+
+                        //   A 记录的数据就是 4 个字节，正好是一个 IPv4 地址
+                        //    先判断类型，是因为 DNS 还有很多别的类型（AAAA 是 IPv6、CNAME 是别名……），
+                        //    它们的数据格式完全不一样，这一步只处理 A
+                        if (anType == 1 && rdLen == 4)
+                            new QTreeWidgetItem(ansItem, QStringList()
+                                                << QStringLiteral("地址")
+                                                << ipv4ToString(m_data, rdStart));
+                        else
+                            new QTreeWidgetItem(ansItem, QStringList()
+                                                << QStringLiteral("数据")
+                                                << QStringLiteral("(类型 %1，暂不解析)").arg(anType));
+
+                        // rdStart + rdLen = 这条记录的结尾 = 下一条记录的"名字"开头
+                        pos = rdStart + rdLen;
                     }
                 }
             }
