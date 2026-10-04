@@ -70,6 +70,34 @@ static QString ipv4ToString(const QByteArray &d,int offset){
             .arg(static_cast<unsigned char>(d.at(offset+3)));
 }
 
+// 解析 DNS 里的域名（那种"长度+内容"的编码）
+// `www.baidu.com` 在 DNS 报文里存成：
+// 03 www  05 baidu  03 com  00
+// d 是整个文件字节，start 是域名开始的位置
+static QString dnsName(const QByteArray &d,int start){
+    QString name; // 保存拼接完成的域名，如 www.baidu.com
+    int pos=start; // 当前读取位置，从域名起始点开始
+    while(pos<d.size()){
+        // ① 取出当前段的长度（1字节），代表后面这一段域名有几个字符
+        const int len=static_cast<unsigned char>(d.at(pos));
+        // ② 读到长度0，代表域名结束，退出循环
+        if(len==0)
+            break;
+        ++pos; // 跳过这个长度字节，pos指向域名文本开头
+        // 越界防御：防止读取超出数据包范围
+        if(pos+len>d.size())
+            break;
+        // ③ 如果不是第一段，拼接一个点 . 用来分隔域名各段
+        if(!name.isEmpty())
+            name+=QLatin1Char('.');
+        // ④ 截取len个字节，转成ASCII字符串拼到域名里
+        name+=QString::fromLatin1(d.mid(pos,len));
+        pos+=len;  // pos前进，跳到下一段的「长度字节」
+
+    }
+    return name;
+}
+
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
 {    
@@ -428,6 +456,7 @@ void Widget::onTableClicked(int row)
                 }
             }
 
+
             // ================= 第 4 层：DNS =================
             // DNS 跑在 UDP 上，端口 53
             // DNS 查询（客户端 → DNS 服务器）||DNS 应答（DNS 服务器 → 客户端)
@@ -436,35 +465,45 @@ void Widget::onTableClicked(int row)
                 // UDP 头是 8 字节（源端口2 目的端口2 长度2 校验和2）
                 const int dnsStart=tranStart+8;
 
-                QTreeWidgetItem *dnsItem=new QTreeWidgetItem(m_tree);
-                dnsItem->setText(0,QStringLiteral("DNS"));
-                dnsItem->setExpanded(true);
+                // DNS头部最少12字节
+                if(dnsStart+12 <= m_data.size()){
+                    QTreeWidgetItem *dnsItem=new QTreeWidgetItem(m_tree);
+                    dnsItem->setText(0,QStringLiteral("DNS"));
+                    dnsItem->setExpanded(true);
 
-                // DNS 头部 12 字节的排布：
-                //   偏移 0：事务 ID（2 字节）
-                //   偏移 2：标志（2 字节，最高位 = 0 查询 / 1 响应）
-                //   偏移 4：问题数（2 字节）
-                //   偏移 6：回答数（2 字节）
-                //   （偏移 8、10 是授权数、附加数，一般不用）
-                const quint16 txId    = readU16(m_data, dnsStart, false);       // 大端！
-                const quint16 flags   = readU16(m_data, dnsStart + 2, false);
-                const quint16 qdCount = readU16(m_data, dnsStart + 4, false);
-                const quint16 anCount = readU16(m_data, dnsStart + 6, false);
+                    // DNS 头部 12 字节的排布：
+                    //   偏移 0：事务 ID（2 字节）
+                    //   偏移 2：标志（2 字节，最高位 = 0 查询 / 1 响应）
+                    //   偏移 4：问题数（2 字节）
+                    //   偏移 6：回答数（2 字节）
+                    //   （偏移 8、10 是授权数、附加数，一般不用）
+                    const quint16 txId    = readU16(m_data, dnsStart, false);       // 大端！
+                    const quint16 flags   = readU16(m_data, dnsStart + 2, false);
+                    const quint16 qdCount = readU16(m_data, dnsStart + 4, false);
+                    const quint16 anCount = readU16(m_data, dnsStart + 6, false);
 
-                // 标志的最高位（bit15）是"这是查询还是响应"
-                //   0x8000 = 1000 0000 0000 0000 → & 之后非 0 就说明是"响应"
-                const QString typeText = (flags & 0x8000)
-                        ? QStringLiteral("响应") : QStringLiteral("查询");
+                    // 标志的最高位（bit15）是"这是查询还是响应"
+                    //   0x8000 = 1000 0000 0000 0000 → & 之后非 0 就说明是"响应"
+                    const QString typeText = (flags & 0x8000)
+                            ? QStringLiteral("响应") : QStringLiteral("查询");
 
-                new QTreeWidgetItem(dnsItem, QStringList()
-                                    << QStringLiteral("事务 ID")
-                                    << QString("0x%1").arg(txId, 4, 16, QLatin1Char('0')));
-                new QTreeWidgetItem(dnsItem, QStringList()
-                                    << QStringLiteral("类型") << typeText);
-                new QTreeWidgetItem(dnsItem, QStringList()
-                                    << QStringLiteral("问题数") << QString::number(qdCount));
-                new QTreeWidgetItem(dnsItem, QStringList()
-                                    << QStringLiteral("回答数") << QString::number(anCount));
+                    new QTreeWidgetItem(dnsItem, QStringList()
+                                        << QStringLiteral("事务 ID")
+                                        << QString("0x%1").arg(txId, 4, 16, QLatin1Char('0')));
+                    new QTreeWidgetItem(dnsItem, QStringList()
+                                        << QStringLiteral("类型") << typeText);
+                    new QTreeWidgetItem(dnsItem, QStringList()
+                                        << QStringLiteral("问题数") << QString::number(qdCount));
+                    new QTreeWidgetItem(dnsItem, QStringList()
+                                        << QStringLiteral("回答数") << QString::number(anCount));
+
+                    // 解析查询名
+                    // 查询名紧跟在 DNS 头部（12 字节）之后
+                    const QString qname=dnsName(m_data,dnsStart+12);
+
+                    new QTreeWidgetItem(dnsItem,QStringList()
+                                        <<QStringLiteral("查询名")<<qname);
+                }
             }
         }
 
