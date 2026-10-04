@@ -29,6 +29,7 @@ private:
 
     QByteArray m_data; // 整个文件的字节（点击时还要用)
     QList<int> m_packetStarts; // 每个包的"包数据"从文件的第几字节开始
+    QList<int> m_packetLens;  // 每个包的长度
     bool m_littleEndian=true; // 文件的字节序（点击时解析还要用）
 };
 

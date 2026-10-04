@@ -181,6 +181,7 @@ Widget::Widget(QWidget *parent)
 
         // << 是 QList 的"追加"运算符：把 offset 加到列表末尾
         m_packetStarts<<offset; // 记住这个包的包数据从哪开始
+        m_packetLens<<static_cast<int>(len); // 这个包有多长
 
         m_table->insertRow(row);
         // m_table->setItem(行号, 列号, QTableWidgetItem对象)
@@ -288,6 +289,7 @@ void Widget::onTableClicked(int row)
     //   这就是 5.1 里那句 m_packetStarts << offset; 存下来的东西
     const int pktStart=m_packetStarts.at(row);
 
+
     // ================= 第 1 层：以太网 II =================
     // 顶层节点（挂在树上）
     // QTreeWidgetItem(父节点, 每一列的文字)
@@ -318,8 +320,8 @@ void Widget::onTableClicked(int row)
                         <<QStringLiteral("类型")<<typeText);
 
     // ================= 第 2 层：IPv4 =================
-    // ① 先算出"这一包有多长",长度的位置 = pktStart - 16 + 8
-    const quint32 pktLen=readU32(m_data,pktStart-16+8,m_littleEndian);
+    // ① 先算出"这一包有多长"
+    const int pktLen = m_packetLens.at(row);
 
     // ② 只有"这个包是以太网里的 IPv4"才继续往下解析
     // 34 = 以太网头 14 + IP 头最小 20（比这短就不可能是完整 IPv4）
@@ -382,19 +384,17 @@ void Widget::onTableClicked(int row)
             transItem->setText(0,ipProto==6?QStringLiteral("TCP"):QStringLiteral("UDP"));
             transItem->setExpanded(true);
 
-            if(tranStart+4<=m_data.size()){
-                // 端口在传输层头的最前面：偏移 0 和偏移 2，各 2 字节（大端）
-                const quint16 srcPort=readU16(m_data,tranStart,false);
-                const quint16 dstPort=readU16(m_data,tranStart+2,false);
 
-                new QTreeWidgetItem(transItem,QStringList()
-                                    <<QStringLiteral("源端口")
-                                    <<QString::number(srcPort)); // 将数字转成字符串
-                new QTreeWidgetItem(transItem,QStringList()
-                                    <<QStringLiteral("目的端口")
-                                    <<QString::number(dstPort));
+            // 端口在传输层头的最前面：偏移 0 和偏移 2，各 2 字节（大端）
+            const quint16 srcPort=readU16(m_data,tranStart,false);
+            const quint16 dstPort=readU16(m_data,tranStart+2,false);
 
-            }
+            new QTreeWidgetItem(transItem,QStringList()
+                                <<QStringLiteral("源端口")
+                                <<QString::number(srcPort)); // 将数字转成字符串
+            new QTreeWidgetItem(transItem,QStringList()
+                                <<QStringLiteral("目的端口")
+                                <<QString::number(dstPort));
 
             // TCP 还有更多字段（UDP 没有这些）
             if(ipProto==6){
@@ -426,10 +426,47 @@ void Widget::onTableClicked(int row)
                     new QTreeWidgetItem(transItem, QStringList()
                                         << QStringLiteral("窗口大小") << QString::number(window));
                 }
+            }
 
+            // ================= 第 4 层：DNS =================
+            // DNS 跑在 UDP 上，端口 53
+            // DNS 查询（客户端 → DNS 服务器）||DNS 应答（DNS 服务器 → 客户端)
+            if(ipProto==17&&(srcPort==53||dstPort==53)){
+                // UDP 头是 8 字节（源端口2 目的端口2 长度2 校验和2）
+                // UDP 头是 8 字节（源端口2 目的端口2 长度2 校验和2）
+                const int dnsStart=tranStart+8;
+
+                QTreeWidgetItem *dnsItem=new QTreeWidgetItem(m_tree);
+                dnsItem->setText(0,QStringLiteral("DNS"));
+                dnsItem->setExpanded(true);
+
+                // DNS 头部 12 字节的排布：
+                //   偏移 0：事务 ID（2 字节）
+                //   偏移 2：标志（2 字节，最高位 = 0 查询 / 1 响应）
+                //   偏移 4：问题数（2 字节）
+                //   偏移 6：回答数（2 字节）
+                //   （偏移 8、10 是授权数、附加数，一般不用）
+                const quint16 txId    = readU16(m_data, dnsStart, false);       // 大端！
+                const quint16 flags   = readU16(m_data, dnsStart + 2, false);
+                const quint16 qdCount = readU16(m_data, dnsStart + 4, false);
+                const quint16 anCount = readU16(m_data, dnsStart + 6, false);
+
+                // 标志的最高位（bit15）是"这是查询还是响应"
+                //   0x8000 = 1000 0000 0000 0000 → & 之后非 0 就说明是"响应"
+                const QString typeText = (flags & 0x8000)
+                        ? QStringLiteral("响应") : QStringLiteral("查询");
+
+                new QTreeWidgetItem(dnsItem, QStringList()
+                                    << QStringLiteral("事务 ID")
+                                    << QString("0x%1").arg(txId, 4, 16, QLatin1Char('0')));
+                new QTreeWidgetItem(dnsItem, QStringList()
+                                    << QStringLiteral("类型") << typeText);
+                new QTreeWidgetItem(dnsItem, QStringList()
+                                    << QStringLiteral("问题数") << QString::number(qdCount));
+                new QTreeWidgetItem(dnsItem, QStringList()
+                                    << QStringLiteral("回答数") << QString::number(anCount));
             }
         }
-
 
     }
 
