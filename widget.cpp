@@ -9,6 +9,9 @@
 #include <QSplitter> //左右分栏
 #include <QTreeWidget> // 树
 #include <QTreeWidgetItem> // 树里的一项
+#include <QPlainTextEdit> // 十六进制视图（只读的多行文本框）
+#include <QFont> // 设置等宽字体
+#include <QScrollBar> // 让十六进制视图的滚动条回到最上面
 
 static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
     if(offset+2>d.size())
@@ -143,6 +146,41 @@ static QString dnsName(const QByteArray &d, int start, int dnsBase, int &endPos)
     return name;
 }
 
+// 把一段字节变成经典的"十六进制视图"文字（就是 Wireshark 下面那块）
+// 生成的样子（每行 16 字节）：
+// 0000  11 22 33 44 55 66 aa bb  cc dd ee 01 08 00 45 00   ."3DUf........E.
+static QString hexDump(const QByteArray &d,int start,int len){
+    QString text;
+    // i = 这一行从第几字节开始；每行 16 个字节，所以一次 +16
+    for(int i=0;i<len;i+=16){
+        // ① 行首：这一行的起始偏移，4 位十六进制（0000、0010、0020……）
+        //    .arg(值, 位数, 进制, 补位字符)
+        text+=QString("%1 ").arg(i,4,16,QLatin1Char('0'));
+
+        QString ascii; // 右边那一列 ASCII 文字
+        for(int j=0;j<16;j++){ // 一行固定留 16 个字节的位置
+            if(i+j<len){
+                // ② 一个字节 = 2 位十六进制
+                const unsigned char b=
+                        static_cast<unsigned char>(d.at(start+i+j));
+                text+=QString("%1 ").arg(b,2,16,QLatin1Char('0'));
+                // ③ 顺手拼右边那列：能显示的字符照原样，
+                //  不能显示的（0x00、换行这些控制符）用点代替
+                ascii+=(b>=32&&b<127)?QLatin1Char(static_cast<char>(b))
+                                    :QLatin1Char('.');
+            }else{
+                // 最后一行可能凑不满 16 字节，补 3 个空格，好让右边那列对齐
+                text+=QStringLiteral("   ");
+            }
+            if(j==7)  // 第 8 个字节后面多空一格，眼睛好数（Wireshark 也这样）
+                text+=QLatin1Char(' ');
+        }
+        // ④ 这一行拼完：一个空格 + ASCII 列 + 换行
+        text+=QStringLiteral(" ")+ascii+QLatin1Char('\n');
+    }
+
+    return text;
+}
 
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
@@ -184,10 +222,28 @@ Widget::Widget(QWidget *parent)
                             <<QStringLiteral("字段")<<QStringLiteral("值"));
     m_tree->header()->setStretchLastSection(true); // 表头最后一列自动拉伸，填满剩余空间
 
+    // 右下角：十六进制视图
+    m_hex=new QPlainTextEdit(this);
+    m_hex->setReadOnly(true); // 只给看不给改
+    // 必须用等宽字体：每个字符一样宽，字节才能排成整齐的格子（用默认字体就歪了）
+    m_hex->setFont(QFont(QStringLiteral("Courier New"),9));
+    // 不允许自动换行：一行太长就横向滚动；换行了就不好读了
+    m_hex->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // 还没点表格时先给句提示，不然一片空白不知道是干嘛的
+    m_hex->setPlainText(QStringLiteral("点击左边的表格，这里显示这个包的原始字节"));
+
+    // 右边再上下分栏：上面协议树，下面十六进制
+    // Qt::Vertical = 上下分（原来那个Horizontal是水平分，左右分）
+    QSplitter *rightSplitter=new QSplitter(Qt::Vertical,this);
+    rightSplitter->addWidget(m_tree);
+    rightSplitter->addWidget(m_hex);
+    rightSplitter->setStretchFactor(0,3); // 上面那半占 3 份高
+    rightSplitter->setStretchFactor(1,2); // 下面那半占 2 份高
+
     // 左右分栏-水平模式（中间的竖线可以拖动）
     QSplitter *splitter=new QSplitter(Qt::Horizontal,this);
     splitter->addWidget(m_table);
-    splitter->addWidget(m_tree);
+    splitter->addWidget(rightSplitter); // ← 现在右边放的是"树 + 十六进制"整块
     splitter->setStretchFactor(0,3); // 左边占 3 份宽,0代表左
     splitter->setStretchFactor(1,2); // 右边占 2 份宽,1代表右
 
@@ -396,6 +452,12 @@ void Widget::onTableClicked(int row)
     // ================= 第 2 层：IPv4 =================
     // ① 先算出"这一包有多长"
     const int pktLen = m_packetLens.at(row);
+
+    // 把整个包的字节填进右下角的十六进制视图
+    // pktLen 是这个包的长度，从 pktStart 开始显示这么多字节
+    // static_cast<int> 是因为 hexDump 要 int，而 pktLen 是 quint32（无符号）
+    m_hex->setPlainText(hexDump(m_data,pktStart,static_cast<int>(pktLen)));
+    m_hex->verticalScrollBar()->setValue(0); // 滚动条回到最上面（不然点新包还停在旧位置）
 
     // ② 只有"这个包是以太网里的 IPv4"才继续往下解析
     // 34 = 以太网头 14 + IP 头最小 20（比这短就不可能是完整 IPv4）
