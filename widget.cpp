@@ -158,6 +158,8 @@ Widget::Widget(QWidget *parent)
         return ;
     }
 
+    m_littleEndian=littleEndian; // 存起来，点击时要用
+
     // pcap文件头：偏移4字节为主版本号、偏移6字节为次版本号，每个版本号占2字节
     const quint16 major=readU16(data,4,littleEndian);
     const quint16 minor=readU16(data,6,littleEndian);
@@ -246,6 +248,8 @@ Widget::Widget(QWidget *parent)
 
             }else if(ethType==0x0806){
                 protoText=QStringLiteral("ARP"); // 非 IPv4（样例里是 ARP）
+            }else{
+                protoText=QString("0x%1").arg(ethType,4,16,QLatin1Char('0'));
             }
 
             m_table->setItem(row,3,new QTableWidgetItem(srcText)); // 第 3 列：源地址
@@ -290,11 +294,14 @@ void Widget::onTableClicked(int row)
     QTreeWidgetItem *ethItem=new QTreeWidgetItem(m_tree,QStringList()<<QStringLiteral("以太网II"));
     ethItem->setExpanded(true); // 默认展开
 
+    const QString dstMac=macToString(m_data,pktStart);
+    const QString srcMac=macToString(m_data,pktStart+6);
+
     // 子节点（挂在 ethItem 下面），两列：字段名 / 值
     new QTreeWidgetItem(ethItem, QStringList()
-                        << QStringLiteral("目的 MAC") << macToString(m_data, pktStart));
+                        << QStringLiteral("源 MAC") << srcMac);
     new QTreeWidgetItem(ethItem, QStringList()
-                        << QStringLiteral("源 MAC") << macToString(m_data, pktStart + 6));
+                        << QStringLiteral("目的 MAC") << dstMac);
 
     // 类型字段（偏移 12，2 字节，大端）
     const quint16 ethType=readU16(m_data,pktStart+12,false);
@@ -304,10 +311,128 @@ void Widget::onTableClicked(int row)
     else if(ethType==0x0806)
         typeText=QStringLiteral("0x0806(ARP)");
     else
+        // 如果以太网类型不是 IPv4，也不是 ARP，就直接把原始十六进制数值展示出来
         typeText=QString("0x%1").arg(ethType,4,16,QLatin1Char('0'));
 
     new QTreeWidgetItem(ethItem,QStringList()
                         <<QStringLiteral("类型")<<typeText);
+
+    // ================= 第 2 层：IPv4 =================
+    // ① 先算出"这一包有多长",长度的位置 = pktStart - 16 + 8
+    const quint32 pktLen=readU32(m_data,pktStart-16+8,m_littleEndian);
+
+    // ② 只有"这个包是以太网里的 IPv4"才继续往下解析
+    // 34 = 以太网头 14 + IP 头最小 20（比这短就不可能是完整 IPv4）
+    if(ethType==0x0800&&pktLen>=34){
+        const int ipStart=pktStart+14; // IP头从以太网（14字节）之后开始
+
+        // ③ 建"IPv4"这个顶层节点，挂在树上
+        QTreeWidgetItem *ipItem=new QTreeWidgetItem(m_tree);
+        ipItem->setText(0,QStringLiteral("IPv4"));
+        ipItem->setExpanded(true);
+
+        // ④ 先把这一层要显示的字段都读出来
+        //    IP 头第 1 个字节：高 4 位 = 版本，低 4 位 = 首部长度÷4
+        //    & 0x0F 取出低 4 位，再 ×4 才是字节数（通常是 20）
+        const int ipHeaderLen=(static_cast<unsigned char>(m_data.at(ipStart))&0x0F)*4;
+
+        // 偏移2：总长度（2字节，大端)
+        const quint16 totalLen=readU16(m_data,ipStart+2,false);
+
+        // 偏移 8：TTL（1 字节）
+        const int ttl=static_cast<unsigned char>(m_data.at(ipStart+8));
+
+        // 偏移 9：协议号（1 字节）：6=TCP、17=UDP、1=ICMP
+        const int ipProto=static_cast<unsigned char>(m_data.at(ipStart+9));
+
+        // 偏移 12：源 IP  偏移 16：目的 IP
+        const QString srcText=ipv4ToString(m_data,ipStart+12);
+        const QString dstText=ipv4ToString(m_data,ipStart+16);
+
+        // 把协议号变成文字
+        QString protoText;
+        if(ipProto==6) protoText=QStringLiteral("6(TCP)");
+        else if(ipProto==17) protoText=QStringLiteral("17(UDP)");
+        else if(ipProto==1) protoText=QStringLiteral("1(ICMP)");
+        else protoText=QString::number(ipProto);
+
+        // ⑤ 每个字段加一个子节点
+        //    写法：new QTreeWidgetItem(父节点, 第0列文字, 第1列文字)
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("版本")<<QStringLiteral("4"));
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("首部长度")<<QStringLiteral("%1字节").arg(ipHeaderLen));
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("总长度")<<QStringLiteral("%1字节").arg(totalLen));
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("TTL")<<QString::number(ttl));
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("协议")<<protoText);
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("源IP")<<srcText);
+        new QTreeWidgetItem(ipItem,QStringList()
+                            <<QStringLiteral("目的IP")<<dstText);
+
+        // ================= 第 3 层：TCP / UDP =================
+        const int tranStart=ipStart+ipHeaderLen;
+
+        // 只有 TCP(6) 和 UDP(17) 才有端口
+        if(ipProto==6||ipProto==17){
+            QTreeWidgetItem *transItem=new QTreeWidgetItem(m_tree);
+            transItem->setText(0,ipProto==6?QStringLiteral("TCP"):QStringLiteral("UDP"));
+            transItem->setExpanded(true);
+
+            if(tranStart+4<=m_data.size()){
+                // 端口在传输层头的最前面：偏移 0 和偏移 2，各 2 字节（大端）
+                const quint16 srcPort=readU16(m_data,tranStart,false);
+                const quint16 dstPort=readU16(m_data,tranStart+2,false);
+
+                new QTreeWidgetItem(transItem,QStringList()
+                                    <<QStringLiteral("源端口")
+                                    <<QString::number(srcPort)); // 将数字转成字符串
+                new QTreeWidgetItem(transItem,QStringList()
+                                    <<QStringLiteral("目的端口")
+                                    <<QString::number(dstPort));
+
+            }
+
+            // TCP 还有更多字段（UDP 没有这些）
+            if(ipProto==6){
+                // TCP额外校验：至少15字节
+                if(tranStart + 15 <= m_data.size()){
+                    // 偏移 4：序号（4 字节，大端）
+                    const quint32 seq = readU32(m_data, tranStart + 4, false);
+
+                    // 偏移 12：2 字节 = 数据偏移(高4位) + 保留(3位) + NS(1位) + 标志位(低8位)
+                    // & 0x00FF 只留低 8 位，正好是 8 个经典标志
+                    const quint16 flags = readU16(m_data, tranStart + 12, false) & 0x00FF;
+
+                    // 偏移 14：窗口大小（2 字节）
+                    const quint16 window = readU16(m_data, tranStart + 14, false);
+
+                    // 标志位：一个 bit 表示一个标志，用 & 逐位检查
+                    QStringList flagNames;                                      // 装"这一包有哪些标志"
+                    if (flags & 0x01) flagNames << QStringLiteral("FIN");       // 第 0 位
+                    if (flags & 0x02) flagNames << QStringLiteral("SYN");       // 第 1 位
+                    if (flags & 0x04) flagNames << QStringLiteral("RST");       // 第 2 位
+                    if (flags & 0x08) flagNames << QStringLiteral("PSH");       // 第 3 位
+                    if (flags & 0x10) flagNames << QStringLiteral("ACK");       // 第 4 位
+                    if (flags & 0x20) flagNames << QStringLiteral("URG");       // 第 5 位
+
+                    new QTreeWidgetItem(transItem, QStringList()
+                                        << QStringLiteral("序号") << QString::number(seq));
+                    new QTreeWidgetItem(transItem, QStringList()
+                                        << QStringLiteral("标志位") << flagNames.join(QStringLiteral(", ")));
+                    new QTreeWidgetItem(transItem, QStringList()
+                                        << QStringLiteral("窗口大小") << QString::number(window));
+                }
+
+            }
+        }
+
+
+    }
+
 }
 
 Widget::~Widget()
