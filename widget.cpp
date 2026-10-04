@@ -70,33 +70,79 @@ static QString ipv4ToString(const QByteArray &d,int offset){
             .arg(static_cast<unsigned char>(d.at(offset+3)));
 }
 
-// 解析 DNS 里的域名（那种"长度+内容"的编码）
-// `www.baidu.com` 在 DNS 报文里存成：
-// 03 www  05 baidu  03 com  00
-// d 是整个文件字节，start 是域名开始的位置
-static QString dnsName(const QByteArray &d,int start){
-    QString name; // 保存拼接完成的域名，如 www.baidu.com
-    int pos=start; // 当前读取位置，从域名起始点开始
-    while(pos<d.size()){
-        // ① 取出当前段的长度（1字节），代表后面这一段域名有几个字符
-        const int len=static_cast<unsigned char>(d.at(pos));
-        // ② 读到长度0，代表域名结束，退出循环
-        if(len==0)
-            break;
-        ++pos; // 跳过这个长度字节，pos指向域名文本开头
-        // 越界防御：防止读取超出数据包范围
-        if(pos+len>d.size())
-            break;
-        // ③ 如果不是第一段，拼接一个点 . 用来分隔域名各段
-        if(!name.isEmpty())
-            name+=QLatin1Char('.');
-        // ④ 截取len个字节，转成ASCII字符串拼到域名里
-        name+=QString::fromLatin1(d.mid(pos,len));
-        pos+=len;  // pos前进，跳到下一段的「长度字节」
+/**
+ * @brief 解析DNS域名，支持【长度+字符串】普通段 + DNS压缩指针
+ * @param d        整个数据包的原始字节数组（QByteArray）
+ * @param start    域名开始的【全局字节下标】(在m_data里的位置)
+ * @param dnsBase  DNS报文头部在m_data里的全局起始下标（压缩指针偏移是相对DNS报文开头）
+ * @param endPos   输出参数(引用)：域名消耗完之后，下一个字段的全局下标
+ * @return 拼接好的域名，例如 www.baidu.com
+ */
+static QString dnsName(const QByteArray &d, int start, int dnsBase, int &endPos)
+{
+    QString name;               // 保存最终拼接的域名
+    int pos = start;            // 当前读取的全局下标
+    endPos = start;             // 默认结束位置
+    int jumps = 0;              // 指针跳转计数，防止恶意包死循环
 
+    while (pos >= 0 && pos < d.size())
+    {
+        // 取出当前1字节
+        const int len = static_cast<unsigned char>(d.at(pos));
+
+        // 情况1：len == 0，域名正常结束（0x00终止符）
+        if (len == 0)
+        {
+            // 没有发生指针跳转，终止符就是域名结尾
+            if (jumps == 0)
+                endPos = pos + 1;
+            break;
+        }
+
+        // 情况2：最高两位是 11，代表【DNS压缩指针】（占2字节）
+        if ((len & 0xC0) == 0xC0)
+        {
+            // 越界保护：指针需要2个字节，不够直接退出
+            if (pos + 1 >= d.size())
+                break;
+
+            // 第一次碰到指针：域名只占用这2字节，下一个字段在指针之后
+            if (jumps == 0)
+                endPos = pos + 2;
+
+            // 取出14位偏移：低6bit(来自第一字节) + 完整第二字节
+            const int ptr = ((len & 0x3F) << 8) | static_cast<unsigned char>(d.at(pos + 1));
+            jumps++;
+
+            // 最多允许跳转8次，防止循环指针死循环
+            if (jumps > 8)
+                break;
+
+            // 指针偏移是【相对于DNS报文头部】，要换算成全局下标
+            pos = dnsBase + ptr;
+            continue; // 跳到目标位置，继续读取域名
+        }
+
+        // 情况3：普通域名段，len为本段字符个数
+        ++pos; // 跳过长度字节，pos指向文本开头
+        // 越界防御
+        if (pos + len > d.size())
+            break;
+
+        // 不是第一段域名，前面加小数点分隔
+        if (!name.isEmpty())
+            name += QLatin1Char('.');
+
+        // 截取len个字节，转ASCII字符串拼接到域名
+        name += QString::fromLatin1(d.mid(pos, len));
+
+        // pos移动到下一段的长度字节位置
+        pos += len;
     }
+
     return name;
 }
+
 
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
@@ -497,12 +543,27 @@ void Widget::onTableClicked(int row)
                     new QTreeWidgetItem(dnsItem, QStringList()
                                         << QStringLiteral("回答数") << QString::number(anCount));
 
-                    // 解析查询名
-                    // 查询名紧跟在 DNS 头部（12 字节）之后
-                    const QString qname=dnsName(m_data,dnsStart+12);
+                    // DNS问题段，紧跟DNS头部之后，偏移12
+                    int qnameStart = dnsStart + 12;
+                    int qnameEnd;
+                    // 调用域名解析函数，得到域名，qnameEnd返回域名读完的位置
+                    QString domain=dnsName(m_data,qnameStart,dnsStart,qnameEnd);
 
                     new QTreeWidgetItem(dnsItem,QStringList()
-                                        <<QStringLiteral("查询名")<<qname);
+                                        <<QStringLiteral("查询域名")<<domain);
+
+                    // qnameEnd 是域名结束位置，后面2字节：查询类型，2字节：查询类
+                    if(qnameEnd +4 <= m_data.size())
+                    {
+                        quint16 qtype = readU16(m_data, qnameEnd, false);
+                        quint16 qclass= readU16(m_data, qnameEnd+2, false);
+                        new QTreeWidgetItem(dnsItem, QStringList()
+                                            << QStringLiteral("查询类型")
+                                            << QString::number(qtype));
+                        new QTreeWidgetItem(dnsItem, QStringList()
+                                            << QStringLiteral("查询类别")
+                                            << QString::number(qclass));
+                    }
                 }
             }
         }
