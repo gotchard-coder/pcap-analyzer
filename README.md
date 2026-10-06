@@ -6,6 +6,8 @@
 > 仓库名是 `pcap-analyzer`，工程文件仍是 `NPC.pro`，编译出来的程序是 `NPC.exe`。
 > 整个项目没有依赖任何抓包库（libpcap 等），pcap 文件格式和协议解析都是自己写的。
 
+📄 **原理说明**：[pcap 文件格式详解（字节布局 → 逐层解析）](docs/pcap-format.md) ｜ 同步发布于 [CSDN](https://blog.csdn.net/kamenrider___/article/details/166494218)
+
 ## 功能
 
 **pcap 文件解析**
