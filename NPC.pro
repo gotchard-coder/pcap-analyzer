@@ -23,6 +23,11 @@ DEFINES += QT_DEPRECATED_WARNINGS
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 
+# 把「本 .pro 文件所在目录」下的 samples 目录，变成一个"编译期常量"递给代码
+# $$PWD = 本 .pro 文件所在的文件夹
+# \\\" 是转义：编译器最终看到的是 -DPCAP_SAMPLE_DIR="E:/Qt/pcap/NPC/samples"
+DEFINES += PCAP_SAMPLE_DIR=\\\"$$PWD/samples\\\"
+
 SOURCES += main.cpp\
         widget.cpp
 

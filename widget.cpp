@@ -295,7 +295,7 @@ Widget::Widget(QWidget *parent)
     // 树上某一项被点击 → onTreeClicked（第 7-2 步加的）
     connect(m_tree,&QTreeWidget::itemClicked,this,&Widget::onTreeClicked);
 
-    QFile file(QStringLiteral("E:/dsh_Cwork/PktView/samples/sample.pcap"));
+    QFile file(QStringLiteral(PCAP_SAMPLE_DIR "/sample.pcap"));
 
     // QIODevice::ReadOnly = 只读模式
     if(!file.open(QIODevice::ReadOnly)){
