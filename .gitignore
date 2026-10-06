@@ -1,0 +1,17 @@
+# Qt Creator 的个人设置 / 临时文件
+*.pro.user
+*.pro.user.*
+*.autosave
+
+# 编译产物（build 目录、中间文件、可执行文件）
+build-*/
+Makefile*
+*.o
+*.obj
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+debug/
+release/
+*.exe
+*.dll
