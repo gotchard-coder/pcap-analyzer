@@ -10,6 +10,7 @@ class QLabel;
 class QTableWidget;
 class QTreeWidget;
 class QPlainTextEdit;
+class QTreeWidgetItem;
 QT_END_NAMESPACE
 
 class Widget : public QWidget
@@ -22,6 +23,9 @@ public:
 
 private slots: // 槽函数写在这里
     void onTableClicked(int row); // 表格被点击时自动调用
+
+    // 树上的某一项被点击时自动调用
+    void onTreeClicked(QTreeWidgetItem *item,int column);
 
 private:
     QLabel *m_label=nullptr;

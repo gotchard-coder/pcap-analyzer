@@ -12,6 +12,10 @@
 #include <QPlainTextEdit> // 十六进制视图（只读的多行文本框）
 #include <QFont> // 设置等宽字体
 #include <QScrollBar> // 让十六进制视图的滚动条回到最上面
+#include <QTextEdit> // 下面要用 QTextEdit::ExtraSelection（给文字加底色）
+#include <QTextBlock> // 要用 QTextBlock::position() 定位到某一行
+#include <QTextDocument> // document()->findBlockByNumber(rowNum)→ 拿到这一行的 QTextBlock
+#include <QColor> // 高亮用的颜色
 
 static quint16 readU16(const QByteArray &d,int offset,bool littleEndian){
     if(offset+2>d.size())
@@ -155,7 +159,7 @@ static QString hexDump(const QByteArray &d,int start,int len){
     for(int i=0;i<len;i+=16){
         // ① 行首：这一行的起始偏移，4 位十六进制（0000、0010、0020……）
         //    .arg(值, 位数, 进制, 补位字符)
-        text+=QString("%1 ").arg(i,4,16,QLatin1Char('0'));
+        text+=QString("%1  ").arg(i,4,16,QLatin1Char('0'));
 
         QString ascii; // 右边那一列 ASCII 文字
         for(int j=0;j<16;j++){ // 一行固定留 16 个字节的位置
@@ -180,6 +184,34 @@ static QString hexDump(const QByteArray &d,int start,int len){
     }
 
     return text;
+}
+
+// 建一个"字段 / 值"子节点，并顺手记住它对应包里哪几个字节
+static QTreeWidgetItem *addField(QTreeWidgetItem *parent,const QString &name,
+                                 const QString &value,int offset,int len){
+    // QTreeWidgetItem(父节点, 每一列的文字) —— 和以前一样
+    QTreeWidgetItem *item = new QTreeWidgetItem(parent,QStringList()<<name<<value);
+    // setData：往节点上"挂"一点看不见的自定义数据
+    //   Qt::UserRole 是 Qt 留给用户自己用的编号，不会和内置的冲突
+    item->setData(0,Qt::UserRole,offset); // 第 0 列上挂：起始字节
+    item->setData(0,Qt::UserRole+1,len); // 第 0 列上挂：字节数
+
+    return item;
+}
+
+// 把"包内第几字节"换算成十六进制视图里的第几个字符
+// 每行长这样：
+//   0000  ff ff ff ff ff ff 11 22  33 44 55 66 08 06 00 01  ......."3DUf....
+//   └6个字符┘└─每字节3个字符─┘        └第9个字节前面多一个空格
+static int hexPosOfByte(const QTextDocument *doc,int byteIndex){
+    const int line=byteIndex/16; // 在第几行
+    const int col=byteIndex %16; // 行内第几个字节
+    if(line>=doc->blockCount()) // 越界（正常不会发生）
+        return -1;
+    // 行首 6 个字符（"0000  "）+ 每字节 3 个字符 + 第 9 个字节起多一个空格
+    const int x=6+col*3+(col>=8?1:0);
+    // findBlockByNumber(line).position() = 这一行第一个字符在整个文本里的位置
+    return doc->findBlockByNumber(line).position()+x;
 }
 
 Widget::Widget(QWidget *parent)
@@ -259,6 +291,9 @@ Widget::Widget(QWidget *parent)
     //   this                     —— 谁来处理（当前窗口）
     //   &Widget::onTableClicked  —— 用哪个函数处理
     connect(m_table,&QTableWidget::cellClicked,this,&Widget::onTableClicked);
+
+    // 树上某一项被点击 → onTreeClicked（第 7-2 步加的）
+    connect(m_tree,&QTreeWidget::itemClicked,this,&Widget::onTreeClicked);
 
     QFile file(QStringLiteral("E:/dsh_Cwork/PktView/samples/sample.pcap"));
 
@@ -430,10 +465,11 @@ void Widget::onTableClicked(int row)
     const QString srcMac=macToString(m_data,pktStart+6);
 
     // 子节点（挂在 ethItem 下面），两列：字段名 / 值
-    new QTreeWidgetItem(ethItem, QStringList()
-                        << QStringLiteral("源 MAC") << srcMac);
-    new QTreeWidgetItem(ethItem, QStringList()
-                        << QStringLiteral("目的 MAC") << dstMac);
+    // 最后两个参数 = 这个字段在包里从第几字节开始、占几个字节（高亮要用）
+    addField(ethItem,QStringLiteral("源 MAC"),
+             srcMac,6,6);
+    addField(ethItem,QStringLiteral("目的 MAC"),
+             dstMac,0,6);
 
     // 类型字段（偏移 12，2 字节，大端）
     const quint16 ethType=readU16(m_data,pktStart+12,false);
@@ -446,8 +482,7 @@ void Widget::onTableClicked(int row)
         // 如果以太网类型不是 IPv4，也不是 ARP，就直接把原始十六进制数值展示出来
         typeText=QString("0x%1").arg(ethType,4,16,QLatin1Char('0'));
 
-    new QTreeWidgetItem(ethItem,QStringList()
-                        <<QStringLiteral("类型")<<typeText);
+    addField(ethItem,QStringLiteral("类型"),typeText,12,2);
 
     // ================= 第 2 层：IPv4 =================
     // ① 先算出"这一包有多长"
@@ -494,22 +529,16 @@ void Widget::onTableClicked(int row)
         else if(ipProto==1) protoText=QStringLiteral("1(ICMP)");
         else protoText=QString::number(ipProto);
 
-        // ⑤ 每个字段加一个子节点
-        //    写法：new QTreeWidgetItem(父节点, 第0列文字, 第1列文字)
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("版本")<<QStringLiteral("4"));
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("首部长度")<<QStringLiteral("%1字节").arg(ipHeaderLen));
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("总长度")<<QStringLiteral("%1字节").arg(totalLen));
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("TTL")<<QString::number(ttl));
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("协议")<<protoText);
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("源IP")<<srcText);
-        new QTreeWidgetItem(ipItem,QStringList()
-                            <<QStringLiteral("目的IP")<<dstText);
+        // addField 的最后两个参数 = 包内偏移 和 字节数
+        // IP 头从包内第 14 字节开始（以太网头 14 字节），所以包内偏移 = 14 + IP头内偏移
+        addField(ipItem, QStringLiteral("版本"),     QStringLiteral("4"),                 14, 1);
+        addField(ipItem, QStringLiteral("首部长度"), QString("%1 字节").arg(ipHeaderLen), 14, 1);
+        addField(ipItem, QStringLiteral("总长度"),   QString("%1 字节").arg(totalLen),    16, 2);
+        addField(ipItem, QStringLiteral("TTL"),      QString::number(ttl),                22, 1);
+        addField(ipItem, QStringLiteral("协议"),     protoText,                           23, 1);
+        addField(ipItem, QStringLiteral("源 IP"),    ipv4ToString(m_data, ipStart + 12),  26, 4);
+        addField(ipItem, QStringLiteral("目的 IP"),  ipv4ToString(m_data, ipStart + 16),  30, 4);
+
 
         // ================= 第 3 层：TCP / UDP =================
         const int tranStart=ipStart+ipHeaderLen;
@@ -525,12 +554,13 @@ void Widget::onTableClicked(int row)
             const quint16 srcPort=readU16(m_data,tranStart,false);
             const quint16 dstPort=readU16(m_data,tranStart+2,false);
 
-            new QTreeWidgetItem(transItem,QStringList()
-                                <<QStringLiteral("源端口")
-                                <<QString::number(srcPort)); // 将数字转成字符串
-            new QTreeWidgetItem(transItem,QStringList()
-                                <<QStringLiteral("目的端口")
-                                <<QString::number(dstPort));
+            // 传输层从包内第几字节开始 = 14(以太网头) + IP 头长度
+            const int tranRel = 14 + ipHeaderLen;
+
+            addField(transItem, QStringLiteral("源端口"),
+                     QString::number(srcPort), tranRel, 2);
+            addField(transItem, QStringLiteral("目的端口"),
+                     QString::number(dstPort), tranRel + 2, 2);
 
             // TCP 还有更多字段（UDP 没有这些）
             if(ipProto==6){
@@ -555,12 +585,12 @@ void Widget::onTableClicked(int row)
                     if (flags & 0x10) flagNames << QStringLiteral("ACK");       // 第 4 位
                     if (flags & 0x20) flagNames << QStringLiteral("URG");       // 第 5 位
 
-                    new QTreeWidgetItem(transItem, QStringList()
-                                        << QStringLiteral("序号") << QString::number(seq));
-                    new QTreeWidgetItem(transItem, QStringList()
-                                        << QStringLiteral("标志位") << flagNames.join(QStringLiteral(", ")));
-                    new QTreeWidgetItem(transItem, QStringList()
-                                        << QStringLiteral("窗口大小") << QString::number(window));
+                    addField(transItem, QStringLiteral("序号"),
+                             QString::number(seq), tranRel + 4, 4);
+                    addField(transItem, QStringLiteral("标志位"),
+                             flagNames.join(QStringLiteral(", ")), tranRel + 12, 2);
+                    addField(transItem, QStringLiteral("窗口大小"),
+                             QString::number(window), tranRel + 14, 2);
                 }
             }
 
@@ -595,15 +625,14 @@ void Widget::onTableClicked(int row)
                     const QString typeText = (flags & 0x8000)
                             ? QStringLiteral("响应") : QStringLiteral("查询");
 
-                    new QTreeWidgetItem(dnsItem, QStringList()
-                                        << QStringLiteral("事务 ID")
-                                        << QString("0x%1").arg(txId, 4, 16, QLatin1Char('0')));
-                    new QTreeWidgetItem(dnsItem, QStringList()
-                                        << QStringLiteral("类型") << typeText);
-                    new QTreeWidgetItem(dnsItem, QStringList()
-                                        << QStringLiteral("问题数") << QString::number(qdCount));
-                    new QTreeWidgetItem(dnsItem, QStringList()
-                                        << QStringLiteral("回答数") << QString::number(anCount));
+                    // DNS 报文从包内第几字节开始 = 14 + IP头长度 + 8(UDP头)
+                    const int dnsRel = 14 + ipHeaderLen + 8;
+
+                    addField(dnsItem, QStringLiteral("事务 ID"),
+                             QString("0x%1").arg(txId, 4, 16, QLatin1Char('0')), dnsRel, 2);
+                    addField(dnsItem, QStringLiteral("类型"),   typeText,                dnsRel + 2, 2);
+                    addField(dnsItem, QStringLiteral("问题数"), QString::number(qdCount), dnsRel + 4, 2);
+                    addField(dnsItem, QStringLiteral("回答数"), QString::number(anCount), dnsRel + 6, 2);
 
                     // DNS问题段，紧跟DNS头部之后，偏移12
                     //pos 用来接住"查询名结束后的位置"，下一步解析回答记录要用
@@ -611,8 +640,10 @@ void Widget::onTableClicked(int row)
                     // 调用域名解析函数，得到域名，pos返回域名读完的位置
                     QString qname=dnsName(m_data,dnsStart+12,dnsStart,pos);
 
-                    new QTreeWidgetItem(dnsItem,QStringList()
-                                        <<QStringLiteral("查询域名")<<qname);
+                    // 查询名从 dns+12 开始，到 pos 结束（pos 是 dnsName 带回来的）
+                    // 所以长度 = pos - (dnsStart + 12)
+                    addField(dnsItem, QStringLiteral("查询名"), qname,
+                             dnsRel + 12, pos - (dnsStart + 12));
 
                     // pos 是域名结束位置，查询名后面还跟着 2 个字段，各占 2 字节，先跳过：
                     //   查询类型 QTYPE ：1 = A（要 IPv4 地址）
@@ -648,34 +679,34 @@ void Widget::onTableClicked(int row)
                         ansItem->setText(0,QStringLiteral("回答 %1").arg(i+1));
                         ansItem->setExpanded(true);
 
-                        new QTreeWidgetItem(ansItem,QStringList()
-                                            <<QStringLiteral("名字")<<anName);
+                        // 这条回答的名字：从 pos 开始，到 nameEnd 结束（都是文件偏移）
+                        addField(ansItem, QStringLiteral("名字"), anName,
+                                 pos - pktStart, nameEnd - pos);
 
                         // 类型/类：认识的那几个显示成文字，不认识的直接显示数字
                         // 三目运算符： 条件 ? 条件真时的值 : 条件假时的值
-                        new QTreeWidgetItem(ansItem, QStringList()
-                                            << QStringLiteral("类型")
-                                            << (anType == 1 ? QStringLiteral("A (1)")
-                                                            : QString::number(anType)));
-                        new QTreeWidgetItem(ansItem, QStringList()
-                                            << QStringLiteral("类")
-                                            << (anClass == 1 ? QStringLiteral("IN (1)")
-                                                             : QString::number(anClass)));
-                        new QTreeWidgetItem(ansItem, QStringList()
-                                            << QStringLiteral("TTL")
-                                            << QString("%1 秒").arg(anTtl));
+                        // 名字之后的固定 10 字节，包内偏移从 nameEnd 算起
+                        const int ansRel = nameEnd - pktStart;
+
+                        addField(ansItem, QStringLiteral("类型"),
+                                 (anType == 1 ? QStringLiteral("A (1)") : QString::number(anType)),
+                                 ansRel, 2);
+                        addField(ansItem, QStringLiteral("类"),
+                                 (anClass == 1 ? QStringLiteral("IN (1)") : QString::number(anClass)),
+                                 ansRel + 2, 2);
+                        addField(ansItem, QStringLiteral("TTL"),
+                                 QString("%1 秒").arg(anTtl), ansRel + 4, 4);
 
                         //   A 记录的数据就是 4 个字节，正好是一个 IPv4 地址
                         //    先判断类型，是因为 DNS 还有很多别的类型（AAAA 是 IPv6、CNAME 是别名……），
                         //    它们的数据格式完全不一样，这一步只处理 A
                         if (anType == 1 && rdLen == 4)
-                            new QTreeWidgetItem(ansItem, QStringList()
-                                                << QStringLiteral("地址")
-                                                << ipv4ToString(m_data, rdStart));
+                            addField(ansItem, QStringLiteral("地址"),
+                                     ipv4ToString(m_data, rdStart), rdStart - pktStart, rdLen);
                         else
-                            new QTreeWidgetItem(ansItem, QStringList()
-                                                << QStringLiteral("数据")
-                                                << QStringLiteral("(类型 %1，暂不解析)").arg(anType));
+                            addField(ansItem, QStringLiteral("数据"),
+                                     QStringLiteral("(类型 %1，暂不解析)").arg(anType),
+                                     rdStart - pktStart, rdLen);
 
                         // rdStart + rdLen = 这条记录的结尾 = 下一条记录的"名字"开头
                         pos = rdStart + rdLen;
@@ -687,6 +718,75 @@ void Widget::onTableClicked(int row)
     }
 
 }
+
+// 树节点点击槽函数：点击协议树条目，在hex窗口高亮对应字段
+void Widget::onTreeClicked(QTreeWidgetItem *item, int column)
+{
+    // 信号自带column参数，表示点击的是第几列，本逻辑不需要，消除未使用参数警告
+    Q_UNUSED(column);
+
+    // 清空上一次所有高亮，防止多次点击叠加一堆高亮色块
+    m_hex->setExtraSelections(QList<QTextEdit::ExtraSelection>());
+
+    // 防御判断：item为空指针直接返回，避免崩溃
+    if (!item)
+        return;
+
+    // 读取节点上保存的隐藏数据：包内起始偏移
+    const QVariant vOff = item->data(0, Qt::UserRole);
+    // 如果这个节点没有存储偏移信息（例如顶层标题节点：以太网II、IPv4），直接退出，不高亮
+    if (!vOff.isValid())
+        return;
+
+    // 取出包内起始偏移、字段字节长度
+    const int offset = vOff.toInt();                            // 字段在数据包内的起始字节编号
+    const int len    = item->data(0, Qt::UserRole + 1).toInt(); // 该字段一共占多少字节
+
+    // 存放所有高亮选区
+    QList<QTextEdit::ExtraSelection> sels;
+    // 保存第一个字节的光标，用来自动滚动页面，让高亮区域显示在窗口内
+    QTextCursor firstCursor(m_hex->document());
+
+    // 循环遍历字段的每一个数据包字节（字段有可能跨hex的两行，逐字节处理更安全）
+    for (int b = offset; b < offset + len; ++b)
+    {
+        // 根据包内字节编号b，算出这个字节在hex文本中的全局字符起始下标
+        const int p = hexPosOfByte(m_hex->document(), b);
+        // p<0代表坐标越界，直接终止循环
+        if (p < 0)
+            break;
+
+        // 创建高亮配置
+        QTextEdit::ExtraSelection sel;
+        sel.format.setBackground(QColor(255, 214, 0));   // 设置高亮背景：金黄色
+
+        // 创建光标，选中2个十六进制字符（只高亮xx，不包含后面的空格）
+        QTextCursor c(m_hex->document());
+        c.setPosition(p);
+        // KeepAnchor：固定起点，移动终点，选中 [p , p+2) 两个字符
+        c.setPosition(p + 2, QTextCursor::KeepAnchor);
+
+        sel.cursor = c;
+        sels << sel;
+
+        // 记录字段第一个字节的光标，用于自动滚动
+        if (b == offset)
+            firstCursor = c;
+    }
+
+    // 一次性渲染全部高亮选区
+    m_hex->setExtraSelections(sels);
+    // 移动光标，自动滚动视图，把高亮区域展示到可视窗口
+    // 让视图滚到第一个字节那里 —— 但只放一个"插入点"，千万别留下"选中"状态！
+    // 原因：如果传进去的光标带着选中（firstCursor 正好选着开头那 2 个字符），
+    //       系统会把"选中底色"画在黄色上面。于是：
+    //         · 4 个字节的字段：第 1 个字节被盖住，后面几个还看得见 → 看起来正常
+    //         · 1 个字节的字段（版本/首部长度/TTL/协议）：整个都被盖住 → 一点黄色都看不见
+    QTextCursor caret(m_hex->document());
+    caret.setPosition(firstCursor.selectionStart());   // selectionStart = 开头那个字节的位置
+    m_hex->setTextCursor(caret);
+}
+
 
 Widget::~Widget()
 {
